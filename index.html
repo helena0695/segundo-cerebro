@@ -146,7 +146,25 @@ function addChat(who,text){chat.push({who,text});if(page!=="home")page="home";re
 function localDate(term){let d=new Date();if(/amanh[ãa]/i.test(term))d.setDate(d.getDate()+1);else if(/hoje/i.test(term)){}else return null;return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`}
 async function runCommand(text){let t=text.trim(),low=t.toLowerCase();addChat("you",t);try{let m;if((m=low.match(/(?:cria|criar|adiciona|adicionar|anota|anotar)\s+(?:uma?\s+)?tarefa\s+(?:para\s+|de\s+)?(.+)/i))){let title=t.slice(t.length-m[1].length).replace(/\s+(amanh[ãa]|hoje)$/i,"").trim(),dt=localDate(t);let {error}=await client.from("private_records").insert({owner_id:user.id,kind:"task",title,description:"",due_at:dt?new Date(dt+"T12:00:00").toISOString():null,metadata:{area:area==="profissional"?"profissional":"pessoal"}});if(error)throw error;await load();addChat("bot","Tarefa criada: "+title+(dt?" — "+fmt(dt):""));return}
 if((m=low.match(/(?:cria|criar|faz|fazer)\s+(?:uma?\s+)?lista\s+(?:de\s+)?(?:compras)?\s*(.*)/i))){let title=m[1]?.trim()||"Lista de compras";let {error}=await client.from("private_records").insert({owner_id:user.id,kind:"shopping_list",title,metadata:{area:"pessoal"}});if(error)throw error;await load();addChat("bot","Lista criada: "+title);return}
-if((m=low.match(/(?:adiciona|adicionar|coloca|colocar)\s+(.+?)\s+(?:na|à)\s+lista/i))){let l=records.find(x=>x.kind==="shopping_list");if(!l){addChat("bot","Cria primeiro uma lista de compras.");return}let items=m[1].split(/,|\s+e\s+/i).map(x=>x.trim()).filter(Boolean);let {error}=await client.from("private_records").insert(items.map(title=>({owner_id:user.id,kind:"shopping_item",title,parent_id:l.id,metadata:{area:"pessoal"}})));if(error)throw error;await load();addChat("bot",items.length+" produto(s) adicionado(s) à lista "+l.title);return}
+// Entende pedidos naturais de compras, inclusive erros comuns da transcrição de voz.
+const normalizeSpeech=x=>x.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[.,!?;:]+$/g,"").trim();
+const spoken=normalizeSpeech(t);
+const shoppingIntent=/(?:adiciona|adicione|adicionar|coloca|coloque|colocar|bota|bote|botar|inclui|incluir|acrescenta|acrescente|poe|por|anota|anote|anotar|preciso comprar|comprar)/i;
+if(shoppingIntent.test(spoken)&&/(?:compra|compras|lista|mercado|supermercado|produto)/i.test(spoken)){
+  let item=spoken.replace(/^(?:por favor[, ]*)?(?:eu quero que voce |quero que voce |voce pode |pode |pra mim |preciso que voce )?/i,"")
+    .replace(/^(?:adiciona|adicione|adicionar|coloca|coloque|colocar|bota|bote|botar|inclui|incluir|acrescenta|acrescente|poe|por|anota|anote|anotar|comprar|preciso comprar)\s+/i,"")
+    .replace(/^(?:o|a|os|as|um|uma|uns|umas)\s+(?=\S)/i,"")
+    .replace(/^(?:na|no|para a|pra|a)\s+(?:lista de compras|lista|compras|mercado)\s*(?:coloca|coloque|adiciona|adicione)?\s*/i,"")
+    .replace(/\s+(?:na|no|para a|pra|a)\s+(?:minha |nossa |sua )?(?:lista(?: de compras)?|compras|mercado|supermercado)\s*$/i,"")
+    .replace(/^(?:de |do |da )/i,"").trim();
+  // Voz pode transcrever "na lista de compras coloca Coca-Cola".
+  if(!item||/^(?:lista|compras|mercado)$/.test(item)){addChat("bot","Qual produto tu quer adicionar à lista de compras?");return}
+  let lists=records.filter(x=>x.kind==="shopping_list");let l=lists.find(x=>/compras|mercado|supermercado/i.test(x.title))||lists[0];
+  if(!l){const {data,error}=await client.from("private_records").insert({owner_id:user.id,kind:"shopping_list",title:"Lista de compras",metadata:{area:"pessoal"}}).select().single();if(error)throw error;l=data;}
+  const items=item.split(/,|\s+e\s+/i).map(x=>x.trim()).filter(Boolean);
+  const {error}=await client.from("private_records").insert(items.map(title=>({owner_id:user.id,kind:"shopping_item",title:title.replace(/\b\w/g,c=>c.toUpperCase()),parent_id:l.id,metadata:{area:"pessoal"}})));
+  if(error)throw error;await load();addChat("bot",items.map(x=>x.replace(/\b\w/g,c=>c.toUpperCase())).join(", ")+" adicionado(s) à lista ‘"+l.title+"’.");return;
+}
 if(/(?:quais|mostra|mostrar|tenho|pendentes|fazer).*(?:tarefas|fazer)|(?:tarefas).*(?:hoje|amanh[ãa]|semana)/i.test(low)){let r=records.filter(x=>x.kind==="task"&&!x.completed);if(/hoje/.test(low))r=r.filter(x=>dOnly(x.due_at)===today());if(/amanh[ãa]/.test(low)){let d=new Date();d.setDate(d.getDate()+1);let tomorrow=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;r=r.filter(x=>dOnly(x.due_at)===tomorrow)}addChat("bot",r.length?r.slice(0,12).map(x=>"• "+x.title+(x.due_at?" ("+fmt(x.due_at)+")":"")).join("\n"):"Nenhuma tarefa pendente nesse período.");return}
 if(/(?:falta comprar|lista de compras|o que comprar)/i.test(low)){let l=records.find(x=>x.kind==="shopping_list");let r=l?records.filter(x=>x.kind==="shopping_item"&&x.parent_id===l.id&&!x.completed):[];addChat("bot",r.length?r.map(x=>"• "+x.title).join("\n"):"Nenhum item pendente na lista.");return}
 if(/(?:compromissos|agenda|marcado)/i.test(low)){let r=records.filter(x=>x.kind==="event").sort((a,b)=>(a.due_at||"").localeCompare(b.due_at||""));addChat("bot",r.length?r.slice(0,10).map(x=>"• "+x.title+(x.due_at?" ("+fmt(x.due_at)+")":"")).join("\n"):"Nenhum compromisso cadastrado.");return}
